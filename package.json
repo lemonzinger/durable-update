@@ -1,0 +1,28 @@
+{
+  "name": "durable-update",
+  "version": "0.0.1",
+  "description": "CI utility for easy, granularly managed dependency updates.",
+  "main": "durable-update.js",
+  "bin": {
+    "durable-update": "durable-update.js"
+  },
+  "dependencies": {
+    "bluebird": "^3.4.6",
+    "commander": "^2.9.0",
+    "david": "^9.0.0",
+    "lodash": "^4.15.0",
+    "winston": "^2.2.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "CI",
+    "CD",
+    "dependency",
+    "management"
+  ],
+  "author": "Leon Zinger",
+  "license": "MIT"
+}
