@@ -1,6 +1,6 @@
 {
   "name": "durable-update",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "CI utility for easy, granularly managed dependency updates.",
   "main": "src/durable-update.js",
   "bin": {
