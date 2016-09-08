@@ -2,9 +2,16 @@
   "name": "durable-update",
   "version": "0.0.1",
   "description": "CI utility for easy, granularly managed dependency updates.",
-  "main": "durable-update.js",
+  "main": "src/durable-update.js",
   "bin": {
-    "durable-update": "durable-update.js"
+    "durable-update": "bin/durable-update.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lemonzinger/durable-update"
+  },
+  "bugs": {
+    "url": "https://github.com/lemonzinger/durable-update/issues"
   },
   "dependencies": {
     "bluebird": "^3.4.6",
