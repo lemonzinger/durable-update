@@ -253,7 +253,7 @@ function updateDependency(config, type, dependency, version) {
     .then(_execCommand.bind(null, 'rm -rf node_modules'))
     .then(_execCommand.bind(null, 'npm install'))
     .then(logger.info.bind(null, 'running tests on project'))
-    .then(testProject.bind(null, testCommands))
+    .then(testProject.bind(null, config.options.testCommands))
     .then(_execCommand.bind(null, 'rm -rf node_modules'))
     .catch(function(error) {
       logger.error('updating dependency \'' + dependency.name + '\' failed', error);
