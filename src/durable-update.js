@@ -44,7 +44,7 @@ var defaultConfigOptions = {
   upgradeType   : 'single',
   onFailure     : 'abort',
   testCommands  : [ 'npm test' ],
-  scmCommand    : 'git commit -m %s'
+  scmCommands    : [ 'git commit -a -m "%message"' ]
 };
 
 function initLogging() {
@@ -101,6 +101,9 @@ function buildUpdateConfig(manifestPath) {
         if (!_.isArray(config.options.testCommands)) {
           config.options.testCommands = defaultConfigOptions.testCommands;
         }
+        if (!_.isArray(config.options.scmCommands)) {
+          config.options.scmCommands = defaultConfigOptions.scmCommands;
+        }
       }
 
       if (_.isPlainObject(config.manifest.davidjs) && _.isPlainObject(config.manifest.davidjs.ignore)) {
@@ -118,13 +121,24 @@ function _execCommand(command) {
   return new Promise(function(resolve, reject) {
     try {
       logger.verbose(command)
-      cp.exec(command, function _callback(error, stdout, stderr) {
+      var child = cp.exec(command, function _callback(error, stdout, stderr) {
+        if (stderr.length > 0) {
+          logger.verbose(command + ' [stderr]');
+          logger.verbose(stderr);
+        }
+        if (stdout.length > 0) {
+          logger.verbose(command + ' [stdout]');
+          logger.verbose(stdout);
+        }
         if (error) {
           logger.error('\'' + command + '\' failed', error);
           reject(error);
         }
-        resolve(stdout);
       });
+      child.on('exit', function(code) {
+        logger.verbose(command + ' return code ' + code);
+        resolve(code);
+      })
     } catch (error) {
       logger.error('\'' + command + '\' failed', error);
       reject(error);
@@ -132,12 +146,21 @@ function _execCommand(command) {
   });
 }
 
+function testProject(testCommands) {
+  return Promise.all(Promise.mapSeries(testCommands, _execCommand))
+    .then(function(returnCodes) {
+      if (_.findIndex(returnCodes, function(c) { return c != 0; }) >= 0) {
+        throw new Error('one or more test commands failed');
+      }
+    });
+}
+
+
 function initialProjectTest(testCommands) {
   logger.info('running initial tests on project');
   return _execCommand('rm -rf node_modules')
     .then(_execCommand.bind(null, 'npm install'))
-    .then(function() { return testCommands; })
-    .mapSeries(_execCommand)
+    .then(testProject.bind(null, testCommands))
     .then(_execCommand.bind(null, 'rm -rf node_modules'))
     .catch(function(error) {
       logger.error('running initial tests on project failed', error);
@@ -230,9 +253,7 @@ function updateDependency(config, type, dependency, version) {
     .then(_execCommand.bind(null, 'rm -rf node_modules'))
     .then(_execCommand.bind(null, 'npm install'))
     .then(logger.info.bind(null, 'running tests on project'))
-    .then(function() {
-      return Promise.mapSeries(config.options.testCommands, _execCommand.bind());
-    })
+    .then(testProject.bind(null, testCommands))
     .then(_execCommand.bind(null, 'rm -rf node_modules'))
     .catch(function(error) {
       logger.error('updating dependency \'' + dependency.name + '\' failed', error);
@@ -259,20 +280,21 @@ function processOutdatedDependencies(updateTasks) {
   }
 
 function performScmCommit(config, task) {
-  // task.config, task.type, task.dependency, task.version
   var message = 'Durable update of ' + task.type + ' dependency \'' + task.dependency + '\' version ' + task.originalVersion + ' >>> ' + task.version;
   logger.info(message);
-  message = '\'' + message.replace('\'', '\\\'') + '\'';
-  if (config.scmCommand) {
-    var command = config.scmCommand.replace('%s', message);
-    logger.verbose('SCM command: ' + command);
-    return _execCommand(command);
+  if (config.options.scmCommands) {
+    var commands = _(config.options.scmCommands)
+      .map(function(command) {
+        return command.replace('%message', message).replace('%manifest', config.manifestPath);
+      })
+      .value();
+    logger.verbose('SCM command(s): ' + JSON.stringify(commands, null, 2));
+    return Promise.mapSeries(commands, _execCommand);
   }
 }
 
 function performDurableUpdate(config) {
-  // return initialProjectTest(config.options.testCommands)
-  return Promise.resolve()
+  return initialProjectTest(config.options.testCommands)
   .then(getAllUpdatedDependencies.bind(null, config))
   .then(prepareUpdateTasks.bind(null, config))
   .then(processOutdatedDependencies)
