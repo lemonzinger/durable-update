@@ -19,12 +19,16 @@ var typeManifestMap = {
   dev      : 'devDependencies',
   optional : 'optionalDependencies'
 };
+var tags = [ 'stable', 'latest' ];
 var semverTypes = [ 'exact', 'minimum', 'loose' ];
 var semverPrefixMap = {
   exact   : '',
   minimum : '^',
   loose   : '~'
 };
+var upgradeTypeOptions = [ 'single', 'all' ];
+var onFailureOptions = [ 'skip', 'abort' ];
+
 var defaultConfigOptions = {
   order         : [ 'standard', 'dev', 'optional' ],
   targetVersion : {
@@ -42,9 +46,9 @@ var defaultConfigOptions = {
     },
   },
   upgradeType   : 'single',
-  onFailure     : 'abort',
+  onFailure     : 'skip',
   testCommands  : [ 'npm test' ],
-  scmCommands    : [ 'git commit -a -m "%message"' ]
+  scmCommands    : [ 'git commit -F %file %manifest' ]
 };
 
 function initLogging() {
@@ -67,9 +71,6 @@ function buildUpdateConfig(manifestPath) {
       };
     })
     .then(function _validateConfig(config) {
-      if (!_.isPlainObject(config.manifest['durable-update'])) {
-        throw new Error('durable-update not enabled in manifest');
-      }
       if (!_.isPlainObject(config.options)) {
         config.options = defaultConfigOptions;
         } else {
@@ -83,19 +84,19 @@ function buildUpdateConfig(manifestPath) {
             if (!_.isPlainObject(config.options.targetVersion[type])) {
               config.options.targetVersion[type] = defaultConfigOptions.options.targetVersion[type];
             } else {
-              if (!_.isString(config.options.targetVersion[type].tag)) {
+              if (tags.indexOf(config.options.targetVersion[type].tag) < 0) {
                 config.options.targetVersion[type].tag = 'stable';
               }
-              if (!_.isString(config.options.targetVersion[type].semver)) {
+              if (semverTypes.indexOf(config.options.targetVersion[type].semver) < 0) {
                 config.options.targetVersion[type].tag = 'minimum';
               }
             }
           });
         }
-        if (!_.isString(config.options.upgradeType)) {
+        if (upgradeTypeOptions.indexOf(config.options.upgradeType) < 0) {
           config.options.upgradeType = defaultConfigOptions.upgradeType;
         }
-        if (!_.isString(config.options.onFailure)) {
+        if (onFailureOptions.indexOf(config.options.onFailure) < 0) {
           config.options.onFailure = defaultConfigOptions.onFailure;
         }
         if (!_.isArray(config.options.testCommands)) {
@@ -109,8 +110,10 @@ function buildUpdateConfig(manifestPath) {
       if (_.isPlainObject(config.manifest.davidjs) && _.isPlainObject(config.manifest.davidjs.ignore)) {
         if (_.isArray(config.options.ignore)) {
           config.options.ignore = _.concat(config.options.ignore, config.manifest.davidjs.ignore);
-        } else {
+        } else if (_.isArray(config.manifest.davidjs.ignore)) {
           config.options.ignore = config.manifest.davidjs.ignore;
+        } else {
+          config.options.ignore = [];
         }
       }
       return config;
@@ -123,12 +126,12 @@ function _execCommand(command) {
       logger.verbose(command)
       var child = cp.exec(command, function _callback(error, stdout, stderr) {
         if (stderr.length > 0) {
-          logger.verbose(command + ' [stderr]');
-          logger.verbose(stderr);
+          logger.debug('\'' + command + '\' [stderr]');
+          logger.debug(stderr);
         }
         if (stdout.length > 0) {
-          logger.verbose(command + ' [stdout]');
-          logger.verbose(stdout);
+          logger.debug('\'' + command + '\' [stdout]');
+          logger.debug(stdout);
         }
         if (error) {
           logger.error('\'' + command + '\' failed', error);
@@ -136,7 +139,7 @@ function _execCommand(command) {
         }
       });
       child.on('exit', function(code) {
-        logger.verbose(command + ' return code ' + code);
+        logger.debug('\'' + command + '\' return code: ' + code);
         resolve(code);
       })
     } catch (error) {
@@ -149,7 +152,9 @@ function _execCommand(command) {
 function testProject(testCommands) {
   return Promise.all(Promise.mapSeries(testCommands, _execCommand))
     .then(function(returnCodes) {
-      if (_.findIndex(returnCodes, function(c) { return c != 0; }) >= 0) {
+      var index = _.findIndex(returnCodes, function(c) { return c != 0; });
+      if (index >= 0) {
+        logger.warn('test command \'' + testCommands[index] + '\' failed with return code: ' + returnCodes[index]);
         throw new Error('one or more test commands failed');
       }
     });
@@ -157,7 +162,7 @@ function testProject(testCommands) {
 
 
 function initialProjectTest(testCommands) {
-  logger.info('running initial tests on project');
+  logger.info('running baseline tests on project');
   return _execCommand('rm -rf node_modules')
     .then(_execCommand.bind(null, 'npm install'))
     .then(testProject.bind(null, testCommands))
@@ -165,6 +170,9 @@ function initialProjectTest(testCommands) {
     .catch(function(error) {
       logger.error('running initial tests on project failed', error);
       throw error;
+    })
+    .then(function() {
+      logger.info('running baseline tests passed');
     });
 }
 
@@ -190,8 +198,8 @@ function _getDependency(config, type) {
     });
 }
 
-function getAllUpdatedDependencies(config) {
-  logger.info('calculating updated dependencies');
+function getOutdatedDependencyInfo(config) {
+  logger.info('calculating outdated dependencies');
   logger.info('manifest: ', JSON.stringify(config.manifest, null, 2));
 
   config.options.dependencies = {};
@@ -228,6 +236,9 @@ function prepareUpdateTasks(config) {
     .map(function(typePair) {
       var type = typePair[0];
       return _.chain(typePair[1])
+        .filter(function(pair) {
+          return (!config.options.ignore || config.options.ignore.indexOf(pair[0]) < 0);
+        })
         .map(function(pair) {
           return {
             config     : config,
@@ -242,73 +253,87 @@ function prepareUpdateTasks(config) {
     .value();
 }
 
-function updateDependency(config, type, dependency, version) {
-  var originalVersion = config.manifest[typeManifestMap[type]][dependency];
-  var newManifest = _.cloneDeep(config.manifest);
-  newManifest[typeManifestMap[type]][dependency] = version;
-  logger.info('updating \'' + type + '\' dependency \'' + dependency + '\' from version \'' + originalVersion + '\' to version \'' + version + '\'');
-  logger.verbose('new manifest: ' + JSON.stringify(newManifest, null, 2));
-  logger.verbose('path: ' + config.manifestPath);
-  return writeFile(config.manifestPath, JSON.stringify(newManifest, null, 2), { encoding: 'utf8' })
+function updateDependency(task) {
+  // config, type, dependency, version
+  // task.config, task.type, task.dependency, task.version
+  task.originalVersion = task.config.manifest[typeManifestMap[task.type]][task.dependency];
+  task.manifest = _.cloneDeep(task.config.manifest);
+  task.manifest[typeManifestMap[task.type]][task.dependency] = task.version;
+  logger.info('updating \'' + task.type + '\' dependency \'' + task.dependency + '\' from version \'' + task.originalVersion + '\' to version \'' + task.version + '\'');
+  logger.verbose('new manifest: ' + JSON.stringify(task.manifest, null, 2));
+  logger.verbose('manifest file: ' + task.config.manifestPath);
+  return writeFile(task.config.manifestPath, JSON.stringify(task.manifest, null, 2), { encoding: 'utf8' })
     .then(_execCommand.bind(null, 'rm -rf node_modules'))
     .then(_execCommand.bind(null, 'npm install'))
-    .then(logger.info.bind(null, 'running tests on project'))
-    .then(testProject.bind(null, config.options.testCommands))
+    .then(function () {
+      logger.info('running tests on project');
+    })
+    .then(testProject.bind(null, task.config.options.testCommands))
     .then(_execCommand.bind(null, 'rm -rf node_modules'))
     .catch(function(error) {
-      logger.error('updating dependency \'' + dependency.name + '\' failed', error);
+      logger.error('updating dependency \'' + task.dependency + '\' failed', error);
       throw error;
-    }).then(Promise.resolve.bind(null, originalVersion));
+    });
 }
 
-function processOutdatedDependencies(updateTasks) {
-    return Promise.mapSeries(updateTasks, function(task) {
-      return updateDependency(task.config, task.type, task.dependency, task.version)
-        .then(function(originalVersion) {
-          task.originalVersion = originalVersion;
-          return true;
-        })
-        .catch(function(error) {
-          return false;
-        })
-        .then(function(success) {
-          if (success) {
-            return Promise.reject(task);
-          }
-        });
-    });
-  }
+function processUpdateTasks(config, updateTasks) {
+  return Promise.mapSeries(updateTasks, function(task, index) {
+    if (config.options.upgradeType === 'single' && _.findIndex(updateTasks, ['success', true]) >= 0) {
+      return task;
+    }
+    return updateDependency(task)
+      .then(function _updateSuccess() {
+        task.success = true;
+        config.manifest = task.manifest;
+        return task;
+      })
+      .catch(function _updateFailure(error) {
+        var message = 'dependency ' + task.dependency + ' update to version ' + task.version + ' failed with: ' + error;
+        task.success = false;
+        if (config.options.onFailure === 'abort') {
+          logger.error(message);
+          throw error;
+        }
+        logger.verbose(message);
+        return task;
+      });
+  });
+}
 
-function performScmCommit(config, task) {
-  var message = 'Durable update of ' + task.type + ' dependency \'' + task.dependency + '\' version ' + task.originalVersion + ' >>> ' + task.version;
-  logger.info(message);
+function performScmCommit(config, tasks) {
+  var message = _.chain(tasks)
+    .filter([ 'success', true ])
+    .map(function(task) {
+      return 'Durable update of ' + task.type + ' dependency \'' + task.dependency + '\' version ' + task.originalVersion + ' >>> ' + task.version;
+    })
+    .join('\n')
+    .value();
+  var messageFile = './scm-message.txt';
+  logger.info('SCM commit message: ', message);
   if (config.options.scmCommands) {
     var commands = _(config.options.scmCommands)
       .map(function(command) {
-        return command.replace('%message', message).replace('%manifest', config.manifestPath);
+        return command.replace('%message', message)
+          .replace('%manifest', config.manifestPath)
+          .replace('%file', messageFile);
       })
       .value();
     logger.verbose('SCM command(s): ' + JSON.stringify(commands, null, 2));
-    return Promise.mapSeries(commands, _execCommand);
+    return writeFile(messageFile, message, { encoding: 'utf8' }) 
+      .then(Promise.mapSeries.bind(null, commands, _execCommand));
   }
+}
+
+function taskPostProcessing(config, tasks) {
+  return performScmCommit(config, tasks);
 }
 
 function performDurableUpdate(config) {
   return initialProjectTest(config.options.testCommands)
-  .then(getAllUpdatedDependencies.bind(null, config))
+  .then(getOutdatedDependencyInfo.bind(null, config))
   .then(prepareUpdateTasks.bind(null, config))
-  .then(processOutdatedDependencies)
-  .then(function _done() {
-    logger.info('durable update complete');
-    process.exit(0);
-  })
-  .catch(function _handleRejection(rejection) {
-    if (!(rejection instanceof Error)) {
-      return rejection;
-    }
-    throw rejection;
-  })
-  .then(performScmCommit.bind(null, config))
+  .then(processUpdateTasks.bind(null, config))
+  .then(taskPostProcessing.bind(null, config))
   .catch(function _completeUpdateFailure(error) {
     logger.error('durable update failed', error);
     process.exit(1);

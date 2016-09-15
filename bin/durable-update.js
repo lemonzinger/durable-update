@@ -9,8 +9,6 @@ var options = {
   loglevel : 'info'
 };
 
-
-
 function validateLogLevel(loglevel) {
   if ([ 'error', 'warn', 'info', 'verbose', 'debug' ].indexOf(loglevel) >= 0) {
     return loglevel;
@@ -37,6 +35,6 @@ if (program.loglevel) {
 if (program.manifest) {
   options.manifestPath = program.manifest;
 }
-console.log(options);
+
 durableUpdate(options);
 
